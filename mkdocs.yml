@@ -1,7 +1,11 @@
 site_name: ScopeHunter Documentation
+site_url: https://facelessuser.github.io/ScopeHunter
 repo_url: https://github.com/facelessuser/ScopeHunter
+edit_uri: tree/master/docs/src/markdown
 site_description: Syntax Scope Viewer in Sublime Text.
-copyright: Copyright &copy; 2012 - 2015 <a href="https://github.com/facelessuser">Isaac Muse</a>
+copyright: |
+  Copyright &copy; 2012 - 2017 <a href="https://github.com/facelessuser">Isaac Muse</a>
+  <br><span class="md-footer-custom-text">emoji provided free by </span><a href="http://www.emojione.com">EmojiOne</a>
 
 pages:
   - About ScopeHunter: index.md
@@ -10,6 +14,8 @@ pages:
   - Contributing &amp; Support: contributing.md
   - License: license.md
 
+docs_dir: docs/src/markdown
+
 theme: material
 docs_dir: docs/src/markdown
 theme_dir: docs/theme
@@ -17,7 +23,7 @@ theme_dir: docs/theme
 markdown_extensions:
   - markdown.extensions.toc:
       slugify: !!python/name:pymdownx.slugs.uslugify
-      permalink: 
+      permalink: "\ue157"
   - markdown.extensions.admonition:
   - markdown.extensions.smarty:
       smart_quotes: false
@@ -55,8 +61,8 @@ markdown_extensions:
   - pymdownx.snippets:
       base_path: docs/src/markdown/_snippets
   - pymdownx.keys:
-      separator: ＋
-  - pymdownx.spoilers:
+      separator: "\uff0b"
+  - pymdownx.details:
 
 extra:
   palette:
@@ -69,6 +75,6 @@ extra:
     - type: github
       link: https://github.com/facelessuser
 extra_css:
-  - extra-effadd97dd.css
+  - extra-00833721db.css
 extra_javascript:
-  - extra-0d49409391.js
+  - extra-4596f9831a.js

@@ -8,12 +8,13 @@ import sublime
 import sublime_plugin
 from time import time, sleep
 import threading
-from ScopeHunter.lib.color_scheme_matcher import ColorSchemeMatcher
 from ScopeHunter.scope_hunter_notify import notify, error
 import traceback
 from textwrap import dedent
+from ScopeHunter.lib.color_scheme_matcher import ColorSchemeMatcher
 
 TOOLTIP_SUPPORT = int(sublime.version()) >= 3124
+
 if TOOLTIP_SUPPORT:
     import mdpopups
 
@@ -39,8 +40,15 @@ if TOOLTIP_SUPPORT:
 COPY_ALL = '''
 ---
 
-[(copy all)](copy-all){: .small}
+[(copy all)](copy-all){: .small} [(reload scheme)](reload){: .small}
 '''
+
+RELOAD = '''
+---
+
+[(reload scheme)](reload){: .small}
+'''
+
 
 # Text Entry
 ENTRY = "%-30s %s"
@@ -64,6 +72,7 @@ ITALIC_NAME_KEY = "Italic Name"
 ITALIC_SCOPE_KEY = "Italic Scope"
 SCHEME_KEY = "Scheme File"
 SYNTAX_KEY = "Syntax File"
+OVERRIDE_SCHEME_KEY = "Override Scheme"
 
 
 def log(msg):
@@ -270,33 +279,55 @@ class GetSelectionScope(object):
                 self.template_vars['bg_sim'] = True
                 self.get_color_box(bgcolor_sim, 'bg_sim', self.next_index())
 
-            if style == "bold":
-                tag = "b"
-            elif style == "italic":
-                tag = "i"
-            elif style == "underline":
-                tag = "u"
-            else:
+            tag = None
+            tag2 = None
+            style_label = set()
+            for s in style.split(' '):
+                if style == "bold":
+                    if tag is None:
+                        tag = "b"
+                    elif tag2 is None:
+                        tag2 = "b"
+                    style_label.add('bold')
+                elif style == "italic":
+                    if tag is None:
+                        tag = "i"
+                    elif tag2 is None:
+                        tag2 = "i"
+                    style_label.add('italic')
+            if len(style_label) == 0:
+                style_label.add('normal')
+            if tag is None:
                 tag = "span"
-                style = "normal"
+            if tag2 is None:
+                tag2 = "span"
+            self.template_vars["style_tag2"] = tag2
             self.template_vars["style_tag"] = tag
-            self.template_vars["style"] = style
+            self.template_vars["style"] = ' '.join(list(style_label))
             self.template_vars["style_index"] = self.next_index()
 
     def get_scheme_syntax(self):
         """Get color scheme and syntax file path."""
 
+        self.overrides = scheme_matcher.overrides
+
         self.scheme_file = scheme_matcher.color_scheme.replace('\\', '/')
         self.syntax_file = self.view.settings().get('syntax')
-        self.scope_bfr.append(ENTRY % (SCHEME_KEY + ":", self.scheme_file))
         self.scope_bfr.append(ENTRY % (SYNTAX_KEY + ":", self.syntax_file))
+        self.scope_bfr.append(ENTRY % (SCHEME_KEY + ":", self.scheme_file))
+        text = []
+        for idx, override in enumerate(self.overrides, 1):
+            text.append(ENTRY % (OVERRIDE_SCHEME_KEY + (" %d:" % idx), override))
+        self.scope_bfr.append('\n'.join(text))
 
         if self.show_popup:
             self.template_vars['files'] = True
-            self.template_vars["scheme"] = self.scheme_file
-            self.template_vars["scheme_index"] = self.next_index()
             self.template_vars["syntax"] = self.syntax_file
             self.template_vars["syntax_index"] = self.next_index()
+            self.template_vars["scheme"] = self.scheme_file
+            self.template_vars["scheme_index"] = self.next_index()
+            self.template_vars["overrides"] = self.overrides
+            self.template_vars["overrides_index"] = self.next_index()
 
     def get_selectors(self, color_selector, bg_selector, style_selectors):
         """Get the selectors used to determine color and/or style."""
@@ -393,6 +424,10 @@ class GetSelectionScope(object):
         params = href.split(':')
         key = params[0]
         index = int(params[1]) if len(params) > 1 else None
+        if key == 'reload':
+            mdpopups.hide_popup(self.view)
+            reinit_plugin()
+            self.view.run_command('get_selection_scope')
         if key == 'copy-all':
             sublime.set_clipboard('\n'.join(self.scope_bfr))
             notify('Copied: All')
@@ -437,6 +472,8 @@ class GetSelectionScope(object):
             copy_data(self.scope_bfr, SCHEME_KEY, index)
         elif key == 'copy-syntax':
             copy_data(self.scope_bfr, SYNTAX_KEY, index)
+        elif key == 'copy-overrides':
+            copy_data(self.scope_bfr, OVERRIDE_SCHEME_KEY, index, lambda text: self.overrides[int(params[2]) - 1])
         elif key == 'scheme' and self.scheme_file is not None:
             window = self.view.window()
             window.run_command(
@@ -455,6 +492,14 @@ class GetSelectionScope(object):
                     "file": "${packages}/%s" % self.syntax_file.replace(
                         '\\', '/'
                     ).replace('Packages/', '', 1)
+                }
+            )
+        elif key == 'override':
+            window = self.view.window()
+            window.run_command(
+                'open_file',
+                {
+                    "file": "${packages}/%s" % self.overrides[int(params[2]) - 1].replace('Packages/', '', 1)
                 }
             )
 
@@ -544,7 +589,7 @@ class GetSelectionScope(object):
             if self.scheme_info or self.rowcol_info or self.points_info or self.file_path_info:
                 tail = mdpopups.md2html(self.view, COPY_ALL)
             else:
-                tail = ''
+                tail = mdpopups.md2html(self.view, RELOAD)
 
             mdpopups.show_popup(
                 self.view,
@@ -651,28 +696,6 @@ class SelectionScopeListener(sublime_plugin.EventListener):
             if scheme_matcher is not None and scheme is not None:
                 if scheme != scheme_matcher.scheme_file:
                     reinit_plugin()
-
-
-class ScopeHunterGenerateCssCommand(sublime_plugin.WindowCommand):
-    """Command to generate scope CSS."""
-
-    def run(self):
-        """Generate the CSS for theme scopes."""
-
-        if scheme_matcher is not None:
-            generated_css = mdpopups.st_scheme_template.Scheme2CSS(
-                scheme_matcher.color_scheme.replace('\\', '/')
-            ).get_css()
-            view = self.window.create_output_panel('scopehunter.gencss', unlisted=True)
-            view.sel().clear()
-            view.sel().add(sublime.Region(0, view.size()))
-            view.run_command('insert', {'characters': generated_css})
-            self.window.run_command("show_panel", {"panel": "output.scopehunter.gencss"})
-
-    def is_enabled(self):
-        """Check if command is enabled."""
-
-        return TOOLTIP_SUPPORT and scheme_matcher is not None
 
 
 class ShThread(threading.Thread):
