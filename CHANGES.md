@@ -1,3 +1,29 @@
+# ScopeHunter 2.11.0
+
+Nov 15, 2017
+
+- **NEW**: Add support for `.hidden-color-scheme`.
+
+# ScopeHunter 2.10.2
+
+Nov 8, 2017
+
+- **FIX**: Create fallback file read for resource race condition.
+
+# ScopeHunter 2.10.1
+
+Nov 7, 2017
+
+- **FIX**: Parse legacy `foregroundSelection` properly.
+
+# ScopeHunter 2.10.0
+
+Nov 4, 2017
+
+- **NEW**: Add support `.sublime-color-scheme` hashed syntax highlighting.
+- **FIX**: Copy of color entries.
+- **FIX**: `.sublime-color-scheme` merge logic.
+
 # ScopeHunter 2.9.3
 
 Oct 30, 2017
@@ -51,13 +77,13 @@ Dec 29, 2016
 
 - **NEW**: Add support for X11 color names in color schemes.
 - **NEW**: Add new support commands.
-- **FIX**: Protect against race condition [#34](https://github.com/facelessuser/ScopeHunter/issues/34)
+- **FIX**: Protect against race condition (#34)
 
 # ScopeHunter 2.5.6
 
 Oct 19, 2016
 
-- **FIX**: Failure when evaluating bold text [#33](https://github.com/facelessuser/ScopeHunter/pull/33)
+- **FIX**: Failure when evaluating bold text (!33)
 
 # ScopeHunter 2.5.5
 

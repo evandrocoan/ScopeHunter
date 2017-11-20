@@ -25,7 +25,9 @@ Algorithm has been split out into a separate library and been enhanced with a nu
 """
 from __future__ import absolute_import
 import sublime
+import codecs
 import re
+from .file_strip.json import sanitize_json
 from .rgba import RGBA, clamp, round_int
 from . import x11colors
 from os import path
@@ -38,7 +40,6 @@ FONT_STYLE = "font_style" if int(sublime.version()) >= 3151 else "fontStyle"
 GLOBAL_OPTIONS = "globals" if int(sublime.version()) >= 3152 else "defaults"
 
 # XML
-IS_XML_RE = re.compile(br'^[\r\n\s]*<')
 XML_COMMENT_RE = re.compile(br"^[\r\n\s]*<!--[\s\S]*?-->[\s\r\n]*|<!--[\s\S]*?-->")
 
 # For new Sublime format
@@ -109,6 +110,12 @@ COLOR_MOD_RE = re.compile(
 )
 
 RE_CAMEL_CASE = re.compile('[A-Z]')
+
+
+def packages_path(pth):
+    """Get packages path."""
+
+    return path.join(path.dirname(sublime.packages_path()), path.normpath(pth))
 
 
 def to_snake(m):
@@ -309,7 +316,10 @@ def sublime_format_path(pth):
 class SchemeColors(
     namedtuple(
         'SchemeColors',
-        ['fg', 'fg_simulated', 'bg', "bg_simulated", "style", "fg_selector", "bg_selector", "style_selectors"],
+        [
+            'fg', 'fg_simulated', 'bg', "bg_simulated", "style", "color_gradient",
+            "fg_selector", "bg_selector", "style_selectors", "color_gradient_selector"
+        ],
         verbose=False
     )
 ):
@@ -327,22 +337,25 @@ class ColorSchemeMatcher(object):
         """Initialize."""
         if color_filter is None:
             color_filter = self.filter
-        self.color_scheme = path.normpath(scheme_file)
+        self.color_scheme = scheme_file.replace('\\', '/')
         self.scheme_file = path.basename(self.color_scheme)
 
-        content = sublime.load_binary_resource(sublime_format_path(self.color_scheme))
-        if scheme_file.lower().endswith(('.tmtheme', '.hidden-tmtheme')) or IS_XML_RE.match(content) is not None:
+        if NEW_SCHEMES and scheme_file.endswith(('.sublime-color-scheme', '.hidden-color-scheme')):
+            self.legacy = False
+            self.scheme_obj = {
+                'variables': {},
+                GLOBAL_OPTIONS: {},
+                'rules': []
+            }
+        else:
+            try:
+                content = sublime.load_binary_resource(sublime_format_path(self.color_scheme))
+            except IOError:
+                # Fallback if file was created manually and not yet found in resources
+                with open(packages_path(self.color_scheme), 'rb') as f:
+                    content = f.read()
             self.legacy = True
             self.convert_format(readPlistFromBytes(XML_COMMENT_RE.sub(b'', content)))
-        else:
-            self.legacy = False
-            self.scheme_obj = sublime.decode_value(content.decode('utf-8'))
-            if 'variables' not in self.scheme_obj:
-                self.scheme_obj['variables'] = {}
-            if GLOBAL_OPTIONS not in self.scheme_obj:
-                self.scheme_obj[GLOBAL_OPTIONS] = {}
-            if 'rules' not in self.scheme_obj:
-                self.scheme_obj['rules'] = []
         self.overrides = []
         if NEW_SCHEMES:
             self.merge_overrides()
@@ -372,24 +385,70 @@ class ColorSchemeMatcher(object):
                 for k, v in item["settings"].items():
                     self.scheme_obj[GLOBAL_OPTIONS][RE_CAMEL_CASE.sub(to_snake, k)] = v
             if 'settings' in item and item.get('scope') is not None:
-                self.scheme_obj['rules'].append(
-                    {
-                        "name": item.get('name', ''),
-                        "scope": item.get('scope'),
-                        "foreground": item['settings'].get('foreground'),
-                        "background": item['settings'].get('background'),
-                        "selection_foreground": item["settings"].get("selection_foreground"),
-                        FONT_STYLE: item['settings'].get('fontStyle', '')
-                    }
-                )
+                rule = {}
+                name = item.get('name')
+                if name is not None:
+                    rule['name'] = name
+                scope = item.get('scope')
+                if scope is not None:
+                    rule["scope"] = scope
+                fg = item['settings'].get('foreground')
+                if fg is not None:
+                    rule['foreground'] = item['settings'].get('foreground')
+                bg = item['settings'].get('background')
+                if bg is not None:
+                    rule['background'] = bg
+                selfg = item["settings"].get("selectionForeground")
+                if selfg is not None:
+                    rule["selection_foreground"] = selfg
+                font_style = item["settings"].get('fontStyle')
+                if font_style is not None:
+                    rule[FONT_STYLE] = font_style
+                self.scheme_obj['rules'].append(rule)
 
     def merge_overrides(self):
         """Merge override schemes."""
 
-        current_file = sublime_format_path(self.color_scheme)
-        for override in sublime.find_resources('%s.sublime-color-scheme' % path.splitext(self.scheme_file)[0]):
-            if override != current_file:
+        package_overrides = []
+        user_overrides = []
+        if self.scheme_file.endswith('.hidden-color-scheme'):
+            pattern = '%s.hidden-color-scheme'
+        else:
+            pattern = '%s.sublime-color-scheme'
+        for override in sublime.find_resources(pattern % path.splitext(self.scheme_file)[0]):
+            if override.startswith('Packages/User/'):
+                user_overrides.append(override)
+            else:
+                package_overrides.append(override)
+        for override in (package_overrides + user_overrides):
+            try:
                 ojson = sublime.decode_value(sublime.load_resource(override))
+            except IOError:
+                # Fallback if file was created manually and not yet found in resources
+                # Though it is unlikely this would ever get executed as `find_resources`
+                # probably wouldn't have seen it either.
+                with codecs.open(packages_path(override), 'r', encoding='utf-8') as f:
+                    ojson = sublime.decode_value(sanitize_json(f.read()))
+
+            for k, v in ojson.get('variables', {}).items():
+                self.scheme_obj['variables'][k] = v
+
+            for k, v in ojson.get(GLOBAL_OPTIONS, {}).items():
+                self.scheme_obj[GLOBAL_OPTIONS][k] = v
+
+            for item in ojson.get('rules', []):
+                self.scheme_obj['rules'].append(item)
+
+            self.overrides.append(override)
+
+        # Rare case of being given a file but sublime hasn't indexed the files and can't find it
+        if (
+            not self.overrides and
+            self.color_scheme.endswith(('.sublime-color-scheme', '.hidden-color-scheme')) and
+            self.color_scheme.startswith('Packages/')
+        ):
+            with codecs.open(packages_path(self.color_scheme), 'r', encoding='utf-8') as f:
+                ojson = sublime.decode_value(sanitize_json(f.read()))
 
                 for k, v in ojson.get('variables', {}).items():
                     self.scheme_obj['variables'][k] = v
@@ -400,7 +459,7 @@ class ColorSchemeMatcher(object):
                 for item in ojson.get('rules', []):
                     self.scheme_obj['rules'].append(item)
 
-                self.overrides.append(override)
+                self.overrides.append(self.color_scheme)
 
     def filter(self, scheme):
         """Dummy filter call that does nothing."""
@@ -458,15 +517,29 @@ class ColorSchemeMatcher(object):
             scolor = None
             style = []
             if scope is not None:
+                # Foreground color
                 color = item.get('foreground', None)
-                if color is not None:
+                if isinstance(color, list):
+                    # Hashed Syntax Highlighting
+                    for index, c in enumerate(color):
+                        color[index] = translate_color(COLOR_RE.match(c.strip()), self.variables, {})
+                elif isinstance(color, str):
                     color = translate_color(COLOR_RE.match(color.strip()), self.variables, {})
+                else:
+                    color = None
+                # Background color
                 bgcolor = item.get('background', None)
-                if bgcolor is not None:
+                if isinstance(bgcolor, str):
                     bgcolor = translate_color(COLOR_RE.match(bgcolor.strip()), self.variables, {})
+                else:
+                    bgcolor = None
+                # Selection foreground color
                 scolor = item.get('selection_foreground', None)
-                if scolor is not None:
+                if isinstance(scolor, str):
                     scolor = translate_color(COLOR_RE.match(scolor.strip()), self.variables, {})
+                else:
+                    scolor = None
+                # Font style
                 if FONT_STYLE in item:
                     for s in item.get(FONT_STYLE, '').split(' '):
                         if s == "bold" or s == "italic":  # or s == "underline":
@@ -478,7 +551,10 @@ class ColorSchemeMatcher(object):
     def add_entry(self, name, scope, color, bgcolor, scolor, style):
         """Add color entry."""
 
-        if color is not None:
+        color_gradient = None
+        if isinstance(color, list):
+            fg, fg_sim, color_gradient = self.process_color_gradient(color)
+        elif color is not None:
             fg, fg_sim = self.process_color(color)
         else:
             fg, fg_sim = None, None
@@ -497,12 +573,44 @@ class ColorSchemeMatcher(object):
             "scope": scope,
             "color": fg,
             "color_simulated": fg_sim,
+            "color_gradient": color_gradient,
             "bgcolor": bg,
             "bgcolor_simulated": bg_sim,
             "selection_color": sfg,
             "selection_color_simulated": sfg_sim,
             "style": style
         }
+
+    def process_color_gradient(self, colors, simple_strip=False, bground=None):
+        """
+        Strip transparency from the color gradient list.
+
+        Transparency can be stripped in one of two ways:
+            - Simply mask off the alpha channel.
+            - Apply the alpha channel to the color essential getting the color seen by the eye.
+        """
+
+        gradient = []
+
+        for color in colors:
+            if color is None or color.strip() == "":
+                continue
+
+            if not color.startswith('#'):
+                continue
+
+            rgba = RGBA(color.replace(" ", ""))
+            if not simple_strip:
+                if bground is None:
+                    bground = self.special_colors['background']['color_simulated']
+                rgba.apply_alpha(bground if bground != "" else "#FFFFFF")
+
+            gradient.append((color, rgba.get_rgb()))
+        if gradient:
+            color, color_sim = gradient[0]
+            return color, color_sim, gradient
+        else:
+            return None, None, None
 
     def process_color(self, color, simple_strip=False, bground=None):
         """
@@ -565,6 +673,8 @@ class ColorSchemeMatcher(object):
 
         color = self.special_colors['foreground']['color']
         color_sim = self.special_colors['foreground']['color_simulated']
+        color_gradient = None
+        color_gradient_selector = None
         bgcolor = self.special_colors['background']['color'] if not explicit_background else None
         bgcolor_sim = self.special_colors['background']['color_simulated'] if not explicit_background else None
         scolor = self.special_colors['selection_foreground']['color']
@@ -577,6 +687,7 @@ class ColorSchemeMatcher(object):
         if scope_key in self.matched:
             color = self.matched[scope_key]["color"]
             color_sim = self.matched[scope_key]["color_simulated"]
+            color_gradient = self.matched[scope_key]["color_gradient"]
             style = self.matched[scope_key]["style"]
             bgcolor = self.matched[scope_key]["bgcolor"]
             bgcolor_sim = self.matched[scope_key]["bgcolor_simulated"]
@@ -587,18 +698,31 @@ class ColorSchemeMatcher(object):
             bg_selector = selectors["background"]
             scolor_selector = selectors["scolor"]
             style_selectors = selectors["style"]
+            color_gradient_selector = selectors['color_gradient']
         else:
             best_match_bg = 0
             best_match_fg = 0
             best_match_style = 0
             best_match_sfg = 0
+            best_match_fg_gradient = 0
             for key in self.colors:
                 match = sublime.score_selector(scope_key, key)
-                if self.colors[key]["color"] is not None and match > best_match_fg:
+                if (
+                    not self.colors[key]['color_gradient'] and
+                    self.colors[key]["color"] is not None and
+                    match > best_match_fg
+                ):
                     best_match_fg = match
                     color = self.colors[key]["color"]
                     color_sim = self.colors[key]["color_simulated"]
                     color_selector = SchemeSelectors(self.colors[key]["name"], self.colors[key]["scope"])
+                if (
+                    self.colors[key]["color"] is not None and
+                    match > best_match_fg_gradient
+                ):
+                    best_match_fg_gradient = match
+                    color_gradient = self.colors[key]["color_gradient"]
+                    color_gradient_selector = SchemeSelectors(self.colors[key]["name"], self.colors[key]["scope"])
                 if self.colors[key]["selection_color"] is not None and match > best_match_sfg:
                     best_match_sfg = match
                     scolor = self.colors[key]["selection_color"]
@@ -627,6 +751,10 @@ class ColorSchemeMatcher(object):
             else:
                 style = ' '.join(style)
 
+            if not isinstance(color_gradient, list):
+                color_gradient = None
+                color_gradient_selector = None
+
             self.matched[scope_key] = {
                 "color": color,
                 "bgcolor": bgcolor,
@@ -634,12 +762,14 @@ class ColorSchemeMatcher(object):
                 "color_simulated": color_sim,
                 "bgcolor_simulated": bgcolor_sim,
                 "scolor_simulated": scolor_sim,
+                "color_gradient": color_gradient,
                 "style": style,
                 "selectors": {
                     "color": color_selector,
                     "background": bg_selector,
                     "scolor": scolor_selector,
-                    "style": style_selectors
+                    "style": style_selectors,
+                    "color_gradient": color_gradient_selector
                 }
             }
 
@@ -648,12 +778,14 @@ class ColorSchemeMatcher(object):
                 color = scolor
                 color_sim = scolor_sim
                 color_selector = scolor_selector
+                color_gradient = None
+                color_gradient_selector = None
             if self.special_colors['selection']['color']:
                 bgcolor = self.special_colors['selection']['color']
                 bgcolor_sim = self.special_colors['selection']['color_simulated']
                 bg_selector = SchemeSelectors("selection", "selection")
 
         return SchemeColors(
-            color, color_sim, bgcolor, bgcolor_sim, style,
-            color_selector, bg_selector, style_selectors
+            color, color_sim, bgcolor, bgcolor_sim, style, color_gradient,
+            color_selector, bg_selector, style_selectors, color_gradient_selector
         )
