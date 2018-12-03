@@ -15,6 +15,8 @@ from ScopeHunter.lib.color_scheme_matcher import ColorSchemeMatcher
 
 TOOLTIP_SUPPORT = int(sublime.version()) >= 3124
 
+_lock = threading.Lock()
+
 if TOOLTIP_SUPPORT:
     import mdpopups
 
@@ -749,7 +751,7 @@ class SelectionScopeListener(sublime_plugin.EventListener):
 
             if scheme_matcher is not None and scheme is not None:
                 if scheme != scheme_matcher.scheme_file:
-                    reinit_plugin()
+                    threading.Thread(target=reinit_plugin).start()
 
 
 class ShThread(threading.Thread):
@@ -807,6 +809,11 @@ class ShThread(threading.Thread):
 def init_color_scheme():
     """Setup color scheme match object with current scheme."""
 
+    if _lock.locked():
+        return
+
+    _lock.acquire()
+
     global scheme_matcher
     scheme_file = None
 
@@ -828,6 +835,8 @@ def init_color_scheme():
         scheme_matcher = None
         log("Theme parsing failed!  Ignoring theme related info.")
         debug(str(traceback.format_exc()))
+    finally:
+        _lock.release()
 
 
 def reinit_plugin():
